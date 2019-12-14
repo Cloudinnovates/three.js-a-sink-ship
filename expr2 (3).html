@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html> 
+	<head> 
+		<title>expr2</title> 
+		<style> body { margin: 0; } canvas { width: 100%; height: 100%} </style> 
+	</head> 
+	<style>
+	body {
+		margin: 0;
+		text-align: center;
+	}
+	#info {
+		position: absolute;
+		top: 0;
+		width: 80%;
+		padding: 6px;
+	}
+    </style>
+	<script src="./js/three.js"></script> 
+	<script src="./js/three.module.js"></script>
+	<script src="./js/OrbitControls.js"></script>
+	<script src="./js/Water.js"></script>
+	<script src="./js/Sky.js"></script>
+	<script src="./js/stats.module.js"></script>
+	<script src="./js/OBJLoader.js"></script>
+	<script src="./js/MTLLoader.js"></script>
+	<script src="./js/Stats.js"></script>
+	<script src="./js/ammo.js"></script>
+	<body> 
+	<div id="info">
+		<p>1.可以通过右侧的控制窗口调光</p>
+		<p>2.可以通过 A D 键控制船的向前向后以及 E 键转向行驶</p>
+		<p>3.情景模拟，F键开启炮弹，击沉巨轮， S键为下沉效果</p>
+	</div>
+	<script type="module">
+		import {GUI} from 'https://threejsfundamentals.org/threejs/resources/threejs/r110/examples/jsm/libs/dat.gui.module.js';
+		var renderer, camera, scene, axesHelper, controls, stats;
+		var directionalLight, light, waterGeometry, sky, sun, water, sunSphere;
+		var effectController, distance, gui;
+		var i = 0;
+		var standardpostion=0;
+		// 子弹相关
+		var running = 0;
+		var jump = 0;
+		var clock = new THREE.Clock();
+		var time = 0;
+		var time1 = 0;
+		var controls;
+		var rigidBodies = [];
+		var margin = 500;
+		var physicsWorld;
+		var gravityConstant = -5;
+		var transformAux1 = new Ammo.btTransform();
+		var collisionConfiguration;
+		var dispatcher;
+		var broadphase;
+		var solver;
+		var mouseCoords = new THREE.Vector2();
+		var raycaster = new THREE.Raycaster();
+		var ballMaterial = new THREE.MeshPhongMaterial( { color: 0x202020 } );
+		// - 主程序
+		document.onkeydown = positionchange;
+		initGraphics();
+		initPhysics();
+		// 加入泰塔尼克号
+		var onProgress = function(xhr) {
+			if (xhr.lengthComputable) {
+				var percentComplete = xhr.loaded / xhr.total * 100;
+				var percent = document.getElementById("percent");
+				percent.innerText = Math.round(percentComplete, 2) + '% 已经加载';
+			}
+		};
+		var onError = function(xhr) {};
+		var mtlLoader = new THREE.MTLLoader();
+		mtlLoader.setPath('obj/ship/Cruisership2012/');
+		mtlLoader.load('Cruiser_2012.mtl', function(materials) {
+			materials.preload();
+			var objLoader = new THREE.OBJLoader();
+			objLoader.setMaterials(materials);
+			objLoader.setPath('obj/ship/Cruisership2012/');
+			objLoader.load('Cruiser 2012.obj', function(object) {
+				object.position.set(0,-20,0);
+				object.scale.set(1, 1, 1);
+				scene.add(object);
+				window.object=object;
+				render();
+			}, onProgress, onError);
+		});
+		animate();
+		
+		// 函数定义	
+		function initGraphics() {
+			// 渲染
+			renderer = new THREE.WebGLRenderer({
+				antialias : true
+			});
+			// 设置分辨率、大小等
+			renderer.setPixelRatio(window.devicePixelRatio);
+			renderer.setSize(window.innerWidth, window.innerHeight);
+			document.body.appendChild(renderer.domElement);
+			// 相机
+			camera = new THREE.PerspectiveCamera(45, window.innerWidth/ window.innerHeight, 1, 10000);
+			camera.position.set(0,200,800);
+			// 场景
+			scene = new THREE.Scene();
+			// 引入鼠标控制
+			controls = new THREE.OrbitControls(camera, renderer.domElement);
+			controls.enableDamping = true;
+			controls.addEventListener('change', render);
+			// 帧数显示
+			stats = new Stats();
+			stats.domElement.style.position = 'absolute';
+			stats.domElement.style.left = '0px';
+			stats.domElement.style.top = '0px';
+			document.body.appendChild(stats.domElement);
+			// 直线光
+			directionalLight = new THREE.DirectionalLight( 0xffffff);
+			directionalLight.position.set(1,1,1).normalize();
+			scene.add( directionalLight );
+			// 环境光
+			light = new THREE.AmbientLight( 0x404040);
+			scene.add( light );
+			// 加入water元素
+			waterGeometry = new THREE.PlaneBufferGeometry( 10000, 10000 );
+			water = new THREE.Water(
+				waterGeometry,
+				{
+					textureWidth: 512,
+					textureHeight: 512,
+					waterNormals: new THREE.TextureLoader().load( './imgs/Water_1_M_Normal.jpg', function ( texture ) {
+						texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
+					} ),
+					alpha: 1.0,
+					sunDirection: light.position.clone().normalize(),
+					sunColor: 0xffffff,
+					waterColor: 0x001e0f,
+					distortionScale: 3.7,
+					fog: scene.fog !== undefined
+				}
+			);
+			water.rotation.x = - Math.PI / 2;
+			scene.add( water );
+			// 加入Skybox元素
+			sky = new THREE.Sky();
+			sky.scale.setScalar( 450000 );
+			scene.add( sky );
+			// 加入sunSphere元素
+			sunSphere = new THREE.Mesh(
+				new THREE.SphereBufferGeometry( 20000, 16, 8 ),
+				new THREE.MeshBasicMaterial( { color: 0xffffff } )
+			);
+			sunSphere.position.y = - 700000;
+			sunSphere.visible = false;
+			scene.add( sunSphere );
+			// GUI控制窗口
+			effectController = {
+				turbidity: 10,
+				rayleigh: 2,
+				mieCoefficient: 0.005,
+				mieDirectionalG: 0.8,
+				luminance: 1,
+				inclination: 0.49, // elevation / inclination
+				azimuth: 0.25, // Facing front,
+				sun: ! true
+			};
+			distance = 400000;
+			guiChanged();
+			// GUI初始化
+			gui = new GUI();
+			gui.add( effectController, "turbidity", 1.0, 20.0, 0.1 ).onChange( guiChanged );
+			gui.add( effectController, "rayleigh", 0.0, 4, 0.001 ).onChange( guiChanged );
+			gui.add( effectController, "mieCoefficient", 0.0, 0.1, 0.001 ).onChange( guiChanged );
+			gui.add( effectController, "mieDirectionalG", 0.0, 1, 0.001 ).onChange( guiChanged );
+			gui.add( effectController, "luminance", 0.0, 2 ).onChange( guiChanged );
+			gui.add( effectController, "inclination", 0, 1, 0.0001 ).onChange( guiChanged );
+			gui.add( effectController, "azimuth", 0, 1, 0.0001 ).onChange( guiChanged );
+			gui.add( effectController, "sun" ).onChange( guiChanged );
+			guiChanged();
+		}
+		// GUI控制窗口改变函数
+		function guiChanged() {
+			var uniforms = sky.material.uniforms;
+			uniforms[ "turbidity" ].value = effectController.turbidity;
+			uniforms[ "rayleigh" ].value = effectController.rayleigh;
+			uniforms[ "mieCoefficient" ].value = effectController.mieCoefficient;
+			uniforms[ "mieDirectionalG" ].value = effectController.mieDirectionalG;
+			uniforms[ "luminance" ].value = effectController.luminance;
+			
+			var theta = Math.PI * ( effectController.inclination - 0.5 );
+			var phi = 2 * Math.PI * ( effectController.azimuth - 0.5 );
+			sunSphere.position.x = distance * Math.cos( phi );
+			sunSphere.position.y = distance * Math.sin( phi ) * Math.sin( theta );
+			sunSphere.position.z = distance * Math.sin( phi ) * Math.cos( theta );
+			sunSphere.visible = effectController.sun;
+			uniforms[ "sunPosition" ].value.copy( sunSphere.position );
+			renderer.render( scene, camera );
+		}
+				
+		function animate(){
+			requestAnimationFrame( animate ); 
+			render();
+			controls.update();
+			stats.update();
+		}
+		function render(){
+			var time = performance.now() * 0.1;
+			water.material.uniforms['time'].value += 1.0 / 60.0;
+			var deltaTime = clock.getDelta();
+			updatePhysics(deltaTime);
+			if(running == 1){
+				if (jump == 0){
+					console.log(jump);
+					camera.position.set(0,150,1500);
+					
+					jump = 1;
+					console.log(jump);
+				} else {
+					var time1 =  performance.now() * 0.1;
+					if(water.position.y<=170){
+						water.position.y=time1*0.02;
+						camera.position.y+=time1*0.0001;
+						// if(water.position.y<=50){
+						// 	camera.position.x+=time1*0.0005;
+						// 	camera.position.z+=time1*0.015;
+						// }
+					
+						 if(water.position.y>150){
+							var axis = new THREE.Vector3(0,0,-1);//向量axis
+							window.object.rotateOnAxis(axis,time1*0.0001*(Math.PI/360));//绕axis轴旋转time*0.0001*π/60
+					// var time1 = performance.now() * 0.1;
+					// if(water.position.y<=170){
+					// 	water.position.y=time1*0.05;
+					// 	camera.position.y+=time1*0.0005;
+					// 	if(water.position.y<=30){
+					// 		camera.position.x+=time1*0.001;
+					// 		camera.position.z+=time1*0.05;
+					// 	}else if(water.position.y>150){
+					// 		var axis = new THREE.Vector3(0,0,-1);//向量axis
+					// 		window.object.rotateOnAxis(axis,time1*0.0001*(Math.PI/60));//绕axis轴旋转time*0.0001*π/60
+						 }
+					}
+				}
+			}
+			renderer.render(scene, camera);
+		}		
+		//this part listens to keyboard input
+		function positionchange(e){
+			let keynum;
+			let keychar;
+
+			keynum = window.event ? e.keyCode : e.which;
+			keychar = String.fromCharCode(keynum);
+			switch(keychar){
+				case 'A': changeleft(); break;
+				case 'D': changeright(); break;
+				case 'E': changerotate(); break;
+				case 'F': launch();break;
+				case 'S': sink();break;
+			}
+		}
+		function changeleft(object){
+			var axis = new THREE.Vector3(10,0,0);//向量axis
+			window.object.translateOnAxis(axis,-5);//沿着axis轴表示方向平移100
+		}
+		function changeright(){
+			var axis = new THREE.Vector3(10,0,0);//向量axis
+			window.object.translateOnAxis(axis,5);//沿着axis轴表示方向平移100
+		}
+		function changerotate(){
+			var axis = new THREE.Vector3(0,1,0);//向量axis
+			window.object.rotateOnAxis(axis,Math.PI/16);//绕axis轴旋转π/8
+		}
+		function launch(){
+			initInput();
+		}
+		function sink(){
+			running = 1;
+		}
+		function initPhysics() {
+			// bullet基本场景配置
+			collisionConfiguration = new Ammo.btDefaultCollisionConfiguration();
+			dispatcher = new Ammo.btCollisionDispatcher(collisionConfiguration);
+			broadphase = new Ammo.btDbvtBroadphase();
+			solver = new Ammo.btSequentialImpulseConstraintSolver();
+			physicsWorld = new Ammo.btDiscreteDynamicsWorld(dispatcher, broadphase, solver, collisionConfiguration);
+			physicsWorld.setGravity(new Ammo.btVector3(0, gravityConstant, 0));
+		}
+		function createRigidBody(threeObject, physicsShape, mass, pos, quat) {
+			threeObject.position.copy(pos);
+			threeObject.quaternion.copy(quat);
+			var transform = new Ammo.btTransform();
+			transform.setIdentity();
+			transform.setOrigin(new Ammo.btVector3(pos.x, pos.y, pos.z));
+			transform.setRotation(new Ammo.btQuaternion(quat.x, quat.y, quat.z, quat.w));
+			var motionState = new Ammo.btDefaultMotionState(transform);
+			var localInertia = new Ammo.btVector3(0, 0, 0);
+			physicsShape.calculateLocalInertia(mass, localInertia);
+			var rbInfo = new Ammo.btRigidBodyConstructionInfo(mass, motionState, physicsShape, localInertia);
+			var body = new Ammo.btRigidBody(rbInfo);
+			threeObject.userData.physicsBody = body;
+			scene.add(threeObject);
+			if (mass > 0) {
+				rigidBodies.push(threeObject);
+				// Disable deactivation
+				// 防止物体弹力过快消失
+				// Ammo.DISABLE_DEACTIVATION = 4
+				body.setActivationState(4);
+			}
+			physicsWorld.addRigidBody(body);
+			return body;
+		}
+		function initInput() {
+			window.addEventListener( 'mousedown', function( event ) {
+				mouseCoords.set(
+						( event.clientX / window.innerWidth ) * 2 - 1,
+						- ( event.clientY / window.innerHeight ) * 2 + 1
+				);
+				raycaster.setFromCamera( mouseCoords, camera );
+				// Creates a ball and throws it
+				var ballMass = 35;
+				var ballRadius = 0.4;
+				var ball = new THREE.Mesh( new THREE.SphereGeometry( ballRadius, 14, 10 ), ballMaterial );
+				ball.castShadow = true;
+				ball.receiveShadow = true;
+				var ballShape = new Ammo.btSphereShape( ballRadius );
+				ballShape.setMargin( margin );
+				var pos = new THREE.Vector3();
+				var quat = new THREE.Quaternion();
+				pos.copy( raycaster.ray.direction );
+				pos.add( raycaster.ray.origin );
+				quat.set( 0, 0, 0, 1 );
+				var ballBody = createRigidBody( ball, ballShape, ballMass, pos, quat );
+				pos.copy( raycaster.ray.direction );
+				pos.multiplyScalar( 24 );
+				ballBody.setLinearVelocity( new Ammo.btVector3( pos.x, pos.y, pos.z ) );
+			}, false );
+		}
+	    function updatePhysics(deltaTime) {
+			physicsWorld.stepSimulation(deltaTime);
+			// 更新物体位置
+			for (var i = 0, iL = rigidBodies.length; i <iL; i++ ){
+				var objThree = rigidBodies[i];
+				var objPhys = objThree.userData.physicsBody;
+				var ms = objPhys.getMotionState();
+				if (ms) {
+					ms.getWorldTransform(transformAux1);
+					var p = transformAux1.getOrigin();
+					var q = transformAux1.getRotation();
+					objThree.position.set(p.x(), p.y(), p.z());
+					objThree.quaternion.set(q.x(), q.y(), q.z(), q.w());
+				}
+			}
+		}
+		
+	</script> 
+	</body> 
+</html>
